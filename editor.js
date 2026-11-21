@@ -224,7 +224,7 @@ function closeMenu(){ $('menuOverlay').classList.add('hidden') }
 function showNotice(message){let el=$('editNotice');if(!el){el=document.createElement('div');el.id='editNotice';el.setAttribute('role','status');const work=$('work');work.insertBefore(el,work.firstChild)}el.textContent=message;el.classList.remove('hidden')}
 function markChangedCards(predicate){document.querySelectorAll('#items .item').forEach(card=>{const id=Number(card.querySelector('button[data-index]')?.dataset.index);if(Number.isInteger(id)&&rows[id]&&predicate(rows[id],id))card.classList.add('was-changed')})}
 
-$('tools').onclick=()=>openMenu();$('closeMenu').onclick=closeMenu;$('closeOverlay').onclick=closeMenu;
+$('tools').onclick=()=>openMenu();$('tabColorQuick').onclick=()=>openMenu('tabs');$('closeMenu').onclick=closeMenu;$('closeOverlay').onclick=closeMenu;
 document.querySelectorAll('.menu-nav button').forEach(b=>b.onclick=()=>showPanel(b.dataset.panel));
 document.addEventListener('keydown',e=>{if(e.key==='Escape')closeMenu()});
 function refreshSpeakers(){const el=$('speakerSelect');if(!el)return;const selected=el.value;const all=[...new Set(rows.map(r=>r.name))];el.replaceChildren(...all.map(name=>{const o=document.createElement('option');o.value=name;o.textContent=name+' ('+rows.filter(r=>r.name===name).length+'件)';return o}));if(all.includes(selected))el.value=selected;else if(all.length)el.value=all[0];syncSpeakerColor()}
