@@ -1,6 +1,26 @@
 
 (()=>{'use strict';const controlRegistry=new Map();const $=id=>document.getElementById(id)||controlRegistry.get(id)||null;let rows=[],original='',history=[],page=0,editing=null;let magnetStart=null;let profiles={},autosaveTimer=null;let currentSourceName='';const pageSize=80;let hiddenTabs=new Set(), design={theme:'dark',layout:'normal',bgColor:'#171923',fgColor:'#e6e6e6',panelColor:'#212530',textColorMode:'common',pageTitle:'',exportName:'',font:'serif',fontSize:16,lineHeight:1.9,spacing:12,accentColor:'#bb7093',showHeading:true,showTabs:true,showIndex:true,diceMode:'original',rubySize:40,frameMode:'none',frameColor1:'#d49ab9',frameColor2:'#f5dcea',frameDirection:'135',frameWidth:18,frameMobileHeight:110,frameImage:''};const presets={dark:['#171923','#e6e6e6','#212530'],light:['#f6f7fb','#242633','#ffffff'],sepia:['#f4ead7','#453a2f','#fff9ed'],navy:['#101b30','#eef3ff','#1b2b47']};const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));function formatRuby(s){const src=String(s??'');const re=/｜([^｜《》\n]+)《([^《》\n]+)》/g;let out='',start=0,m;while((m=re.exec(src))!==null){out+=esc(src.slice(start,m.index));out+='<ruby>'+esc(m[1])+'<rt>'+esc(m[2])+'</rt></ruby>';start=re.lastIndex;}return out+esc(src.slice(start));}function snapshot(){scheduleAutosave();history.push(JSON.stringify({rows,hiddenTabs:[...hiddenTabs],profiles,design}));if(history.length>25)history.shift()}function textOf(n){return(n?.innerText||n?.textContent||'').trim()}function parseHTML(source){
  const doc=new DOMParser().parseFromString(source,'text/html');
+ // ココフォリア公式の新形式: ダイス結果は発言本文とは別の .roll-result 要素。
+ const articles=[...doc.querySelectorAll('article.message')];
+ if(articles.length){
+  return articles.map(article=>{
+   const speaker=article.querySelector('.message-header .speaker');
+   const tabNode=article.querySelector('.message-header .channel-name');
+   const msgNode=article.querySelector('.message-text');
+   const rollNode=article.querySelector('.roll-result');
+   const diceResult=rollNode?.textContent?.trim()||'';
+   const diceOutcome=rollNode?.classList.contains('critical')?'success':rollNode?.classList.contains('success')?'success':rollNode?.classList.contains('fumble')?'fail':rollNode?.classList.contains('failure')?'fail':'';
+   let body=(msgNode?.textContent||'').trim();
+   if(diceResult)body+=(body?'\n':'')+diceResult;
+   const speakerStyle=speaker?.getAttribute('style')||'';
+   const color=(speakerStyle.match(/--speaker-color\s*:\s*(#[0-9a-f]{3,8})/i)||[])[1]||'#aeb6ff';
+   const name=textOf(speaker)||(article.classList.contains('system')?'SYSTEM':'（名前なし）');
+   const tab=textOf(tabNode).replace(/^\s*\[|\]\s*$/g,'')||'メイン';
+   return {name,tab,text:body,color,diceResult,diceOutcome};
+  });
+ }
+ // 旧形式の p タグで構成されたログも従来どおり読み込む。
  let candidates=[...doc.querySelectorAll('p')].filter(p=>p.querySelector('span,.name,.tab,.message,.text')||p.closest('.chatlog,#chatlog'));
  if(!candidates.length)candidates=[...doc.querySelectorAll('.chatlog > *,#chatlog > *')].filter(x=>textOf(x));
  if(!candidates.length)candidates=[...doc.querySelectorAll('p')].filter(x=>textOf(x));
@@ -10,7 +30,6 @@
   const tabbed=p.querySelector('.tab,[class*="tab"]');
   const messaged=p.querySelector('.message,.text,[class*="message"]');
   let tabNode=tabbed, nameNode=named, msgNode=messaged;
-  // Standard Ccfolia export: <span> [main]</span> <span>Character</span> : <span>Speech</span>
   if(spans.length>=3 && /^\s*\[[^\]]+\]\s*$/.test(textOf(spans[0]))){
    tabNode ||= spans[0]; nameNode ||= spans[1]; msgNode ||= spans[2];
   } else if(spans.length>=2 && !nameNode && !msgNode){
@@ -20,14 +39,18 @@
   for(const e of clone.querySelectorAll('.name,.tab,[class*="name"],[class*="tab"]'))e.remove();
   let body=msgNode?textOf(msgNode):textOf(clone);
   if(!msgNode && nameNode){const prefix=textOf(nameNode);if(body.startsWith(prefix))body=body.slice(prefix.length).replace(/^\s*[:：]\s*/,'').trim()}
+  const rollNode=p.querySelector('.roll-result');
+  const diceResult=rollNode?.textContent?.trim()||'';
+  const diceOutcome=rollNode?.classList.contains('critical')?'success':rollNode?.classList.contains('success')?'success':rollNode?.classList.contains('fumble')?'fail':rollNode?.classList.contains('failure')?'fail':'';
+  if(diceResult&&!body.includes(diceResult))body+=(body?'\n':'')+diceResult;
   const style=(nameNode?.getAttribute('style')||'')+';'+(p.getAttribute('style')||'');
   const color=(style.match(/(?:^|;)\s*color\s*:\s*(#[0-9a-fA-F]{3,8}|rgb\([^)]*\))/)||[])[1]||'#aeb6ff';
   const name=textOf(nameNode)||'（名前なし）';
   const tab=textOf(tabNode).replace(/^\s*\[|\]\s*$/g,'')||'メイン';
-  return {name,tab,text:body,color,source:p.outerHTML};
+  return {name,tab,text:body,color,diceResult,diceOutcome};
  }).filter(x=>x.text||x.name!=='（名前なし）');
 }
-function load(str,filename){let result=[];hiddenTabs=new Set();design={theme:'dark',layout:'normal',bgColor:'#171923',fgColor:'#e6e6e6',panelColor:'#212530',textColorMode:'common',pageTitle:'',exportName:'',font:'serif',fontSize:16,lineHeight:1.9,spacing:12,accentColor:'#bb7093',showHeading:true,showTabs:true,showIndex:true,diceMode:'original',rubySize:40,frameMode:'none',frameColor1:'#d49ab9',frameColor2:'#f5dcea',frameDirection:'135',frameWidth:18,frameMobileHeight:110,frameImage:''};try{if(filename?.endsWith('.json')){const obj=JSON.parse(str);result=Array.isArray(obj)?obj:obj.rows; if(!Array.isArray(result))throw Error('不正なJSONです');original=obj.original||'';hiddenTabs=new Set(obj.hiddenTabs||[]);if(obj.design)design={...design,...obj.design};profiles=obj.profiles||{};if(obj.pageTitle)design.pageTitle=obj.pageTitle;if(obj.exportName)design.exportName=obj.exportName}else{result=parseHTML(str);original=str;const doc=new DOMParser().parseFromString(str,'text/html');design.pageTitle=(doc.querySelector('title')?.textContent||'').trim()||filename.replace(/\.html?$/i,'');design.exportName=filename.replace(/\.html?$/i,'')}}catch(e){alert('読み込みに失敗しました：'+e.message);return}if(!result.length){alert('発言が見つかりませんでした。ココフォリアから出力したHTMLを指定してください。');return}rows=result.map(r=>({name:String(r.name||''),tab:String(r.tab||'メイン'),text:String(r.text||''),color:String(r.color||'#aeb6ff'),type:r.type||'message',image:r.image||''}));currentSourceName=filename||'';if($('diceMode'))$('diceMode').value=design.diceMode||'original';history=[];page=0;editing=null;$('drop').classList.add('hidden');$('work').classList.remove('hidden');syncDesign();render()}
+function load(str,filename){let result=[];hiddenTabs=new Set();design={theme:'dark',layout:'normal',bgColor:'#171923',fgColor:'#e6e6e6',panelColor:'#212530',textColorMode:'common',pageTitle:'',exportName:'',font:'serif',fontSize:16,lineHeight:1.9,spacing:12,accentColor:'#bb7093',showHeading:true,showTabs:true,showIndex:true,diceMode:'original',rubySize:40,frameMode:'none',frameColor1:'#d49ab9',frameColor2:'#f5dcea',frameDirection:'135',frameWidth:18,frameMobileHeight:110,frameImage:''};try{if(filename?.endsWith('.json')){const obj=JSON.parse(str);result=Array.isArray(obj)?obj:obj.rows; if(!Array.isArray(result))throw Error('不正なJSONです');original=obj.original||'';hiddenTabs=new Set(obj.hiddenTabs||[]);if(obj.design)design={...design,...obj.design};profiles=obj.profiles||{};if(obj.pageTitle)design.pageTitle=obj.pageTitle;if(obj.exportName)design.exportName=obj.exportName}else{result=parseHTML(str);original=str;const doc=new DOMParser().parseFromString(str,'text/html');design.pageTitle=(doc.querySelector('title')?.textContent||'').trim()||filename.replace(/\.html?$/i,'');design.exportName=filename.replace(/\.html?$/i,'')}}catch(e){alert('読み込みに失敗しました：'+e.message);return}if(!result.length){alert('発言が見つかりませんでした。ココフォリアから出力したHTMLを指定してください。');return}rows=result.map(r=>({name:String(r.name||''),tab:String(r.tab||'メイン'),text:String(r.text||''),color:String(r.color||'#aeb6ff'),type:r.type||'message',image:r.image||'',diceResult:String(r.diceResult||''),diceOutcome:String(r.diceOutcome||'')}));currentSourceName=filename||'';if($('diceMode'))$('diceMode').value=design.diceMode||'original';history=[];page=0;editing=null;$('drop').classList.add('hidden');$('work').classList.remove('hidden');syncDesign();render()}
 function readFile(file){if(!file)return;const reader=new FileReader();reader.onload=()=>load(String(reader.result),file.name.toLowerCase());reader.readAsText(file,'UTF-8')}
 $('file').onchange=e=>readFile(e.target.files[0]);const drop=$('drop');drop.ondragover=e=>{e.preventDefault();drop.classList.add('over')};drop.ondragleave=()=>drop.classList.remove('over');drop.ondrop=e=>{e.preventDefault();drop.classList.remove('over');readFile(e.dataTransfer.files[0])};drop.onclick=e=>{if(e.target.closest('label'))return;$('file').click()};$('reset').onclick=()=>{if(rows.length&&!confirm('編集中のデータを閉じますか？'))return;rows=[];$('file').value='';$('drop').classList.remove('hidden');$('work').classList.add('hidden')};
 function matches(r){let q=$('search').value.toLowerCase(),t=$('tabFilter').value,n=$('nameFilter').value;return !hiddenTabs.has(r.tab)&&(!q||(r.name+' '+r.tab+' '+r.text).toLowerCase().includes(q))&&(!t||r.tab===t)&&(!n||r.name===n)}function filtered(){return rows.map((r,i)=>({...r,i})).filter(matches)}function refreshFilters(){const tabs=[...new Set(rows.map(r=>r.tab))],names=[...new Set(rows.map(r=>r.name))];for(const [id,arr,placeholder] of [['tabFilter',tabs,'すべてのタブ'],['nameFilter',names,'すべての発言者']]){const el=$(id),selected=el.value;el.innerHTML='<option value="">'+placeholder+'</option>'+arr.map(a=>'<option value="'+esc(a)+'">'+esc(a)+'</option>').join('');el.value=arr.includes(selected)?selected:''}}
@@ -82,7 +105,35 @@ function doMagnet(index){
  showNotice('🧲 '+moving.length+'件の「'+tab+'」の発言をまとめました。元に戻すこともできます。');
 }
 
-$('items').onclick=e=>{const btn=e.target.closest('button[data-action]');if(!btn)return;const i=+btn.dataset.index,a=btn.dataset.action;if(a==='magnet'){doMagnet(i);return;}if(a==='insertBefore'||a==='insertAfter'){const pos=i+(a==='insertAfter'?1:0);snapshot();const base=rows[i];rows.splice(pos,0,{name:base.name||'KP',tab:base.tab||'メイン',text:'',color:base.color||'#aeb6ff'});$('search').value='';$('tabFilter').value='';$('nameFilter').value='';editing=pos;page=Math.floor(pos/pageSize);render();const field=$('edText');if(field){field.focus({preventScroll:true});field.closest('.item')?.scrollIntoView({block:'center',behavior:'smooth'});}showNotice('指定位置に発言を追加しました。内容を入力して「変更を確定」を押してください。');return;}if(a==='edit'){editing=i;render();const field=$('edText');if(field){field.focus({preventScroll:true});field.closest('.item')?.scrollIntoView({block:'nearest',behavior:'smooth'});}return}if(a==='delete'){snapshot();rows.splice(i,1)}else if(a==='up'&&i>0){snapshot();[rows[i-1],rows[i]]=[rows[i],rows[i-1]]}else if(a==='down'&&i<rows.length-1){snapshot();[rows[i+1],rows[i]]=[rows[i],rows[i+1]]}render()};for(const id of ['search','tabFilter','nameFilter'])$(id).addEventListener(id==='search'?'input':'change',()=>{page=0;editing=null;render()});$('add').onclick=()=>{snapshot();rows.push({name:'KP',tab:'メイン',text:'',color:'#aeb6ff'});$('search').value='';$('tabFilter').value='';$('nameFilter').value='';page=Math.ceil(rows.length/pageSize)-1;editing=rows.length-1;render();$('edText')?.focus()};$('undo').onclick=()=>{if(!history.length){alert('元に戻せる操作がありません');return}{const prior=JSON.parse(history.pop());rows=prior.rows||prior;hiddenTabs=new Set(prior.hiddenTabs||[])}editing=null;render()};$('rename').onclick=()=>{const old=$('oldName').value,neo=$('newName').value;if(!old||!neo)return alert('変更前・変更後の名前を入力してください');const count=rows.filter(r=>r.name===old).length;if(!count)return alert('一致する発言者がいません');snapshot();rows.forEach(r=>{if(r.name===old)r.name=neo});editing=null;render();closeMenu();markChangedCards(r=>r.name===neo);showNotice(count+'件の発言者名を変更しました')};$('removeFiltered').onclick=()=>{const target=filtered();if(!target.length)return;if(!confirm(target.length+'件の発言を削除します。よろしいですか？'))return;snapshot();const ids=new Set(target.map(x=>x.i));rows=rows.filter((_,i)=>!ids.has(i));render()};function download(data,name,type){let blob=new Blob([data],{type});let url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=name;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1000)}function diceClass(text){const s=String(text||'');if(/失敗|ファンブル|Fumble|failure/i.test(s))return 'dice-fail';if(/成功|クリティカル|Critical|success/i.test(s))return 'dice-success';return ''}
+$('items').onclick=e=>{const btn=e.target.closest('button[data-action]');if(!btn)return;const i=+btn.dataset.index,a=btn.dataset.action;if(a==='magnet'){doMagnet(i);return;}if(a==='insertBefore'||a==='insertAfter'){const pos=i+(a==='insertAfter'?1:0);snapshot();const base=rows[i];rows.splice(pos,0,{name:base.name||'KP',tab:base.tab||'メイン',text:'',color:base.color||'#aeb6ff'});$('search').value='';$('tabFilter').value='';$('nameFilter').value='';editing=pos;page=Math.floor(pos/pageSize);render();const field=$('edText');if(field){field.focus({preventScroll:true});field.closest('.item')?.scrollIntoView({block:'center',behavior:'smooth'});}showNotice('指定位置に発言を追加しました。内容を入力して「変更を確定」を押してください。');return;}if(a==='edit'){editing=i;render();const field=$('edText');if(field){field.focus({preventScroll:true});field.closest('.item')?.scrollIntoView({block:'nearest',behavior:'smooth'});}return}if(a==='delete'){snapshot();rows.splice(i,1)}else if(a==='up'&&i>0){snapshot();[rows[i-1],rows[i]]=[rows[i],rows[i-1]]}else if(a==='down'&&i<rows.length-1){snapshot();[rows[i+1],rows[i]]=[rows[i],rows[i+1]]}render()};for(const id of ['search','tabFilter','nameFilter'])$(id).addEventListener(id==='search'?'input':'change',()=>{page=0;editing=null;render()});$('add').onclick=()=>{snapshot();rows.push({name:'KP',tab:'メイン',text:'',color:'#aeb6ff'});$('search').value='';$('tabFilter').value='';$('nameFilter').value='';page=Math.ceil(rows.length/pageSize)-1;editing=rows.length-1;render();$('edText')?.focus()};$('undo').onclick=()=>{if(!history.length){alert('元に戻せる操作がありません');return}{const prior=JSON.parse(history.pop());rows=prior.rows||prior;hiddenTabs=new Set(prior.hiddenTabs||[])}editing=null;render()};$('rename').onclick=()=>{const old=$('oldName').value,neo=$('newName').value;if(!old||!neo)return alert('変更前・変更後の名前を入力してください');const count=rows.filter(r=>r.name===old).length;if(!count)return alert('一致する発言者がいません');snapshot();rows.forEach(r=>{if(r.name===old)r.name=neo});editing=null;render();closeMenu();markChangedCards(r=>r.name===neo);showNotice(count+'件の発言者名を変更しました')};$('removeFiltered').onclick=()=>{const target=filtered();if(!target.length)return;if(!confirm(target.length+'件の発言を削除します。よろしいですか？'))return;snapshot();const ids=new Set(target.map(x=>x.i));rows=rows.filter((_,i)=>!ids.has(i));render()};function download(data,name,type){let blob=new Blob([data],{type});let url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=name;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1000)}// ダイス判定の結果行だけを装飾する。通常RP中の「成功」「失敗」は対象外。
+function diceClass(text){
+ const s=String(text||'').trim();
+ if(!/[＞>]/.test(s))return '';
+ if(/(?:失敗|ファンブル|Fumble|failure)\s*$/i.test(s))return 'dice-fail';
+ if(/(?:成功|クリティカル|スペシャル|Critical|success)\s*$/i.test(s))return 'dice-success';
+ return '';
+}
+function formatMessage(r){
+ const s=String(r.text||'');
+ const plain=()=>formatRuby(s).replace(/\n/g,'<br>');
+ if(design.diceMode!=='colored')return plain();
+ let result='',cls='';
+ if(r.diceResult&&s.includes(r.diceResult)){
+  result=r.diceResult;
+  cls=r.diceOutcome==='success'?'dice-success':r.diceOutcome==='fail'?'dice-fail':diceClass(result);
+ }else{
+  // 旧形式: コマンドと判定結果が一つの本文に含まれている場合。
+  const lines=s.split('\n');
+  const last=lines[lines.length-1].trim();
+  const hasDiceCommand=/(?:^|\n)\s*(?:CCB|CC|CBR|RESB|SAN|SANC|\d+d\d+|\d*d100|1d100|\(\d+d\d+)[^\n]*/i.test(s);
+  if(hasDiceCommand&&/[＞>]/.test(last)){result=last;cls=diceClass(last)}
+ }
+ if(!result||!cls)return plain();
+ const at=s.lastIndexOf(result);
+ if(at<0)return plain();
+ const fmt=t=>formatRuby(t).replace(/\n/g,'<br>');
+ return fmt(s.slice(0,at))+'<span class="'+cls+'">'+fmt(result)+'</span>'+fmt(s.slice(at+result.length));
+}
 function htmlOut(){
  const safeColor=(c,defaultColor)=>/^#[0-9a-f]{6}$/i.test(c)?c:defaultColor;
  const bg=safeColor(design.bgColor,'#171923'), fg=safeColor(design.fgColor,'#e6e6e6'),panel=safeColor(design.panelColor,'#212530'),accent=safeColor(design.accentColor,'#bb7093');
@@ -98,7 +149,7 @@ function htmlOut(){
  const title=esc(design.pageTitle||design.exportName||'セッションログ');
  const font=({serif:'Georgia, "Yu Mincho", "Hiragino Mincho ProN",serif',sans:'system-ui,"Yu Gothic",Meiryo,sans-serif',modern:'"Hiragino Kaku Gothic ProN", "Yu Gothic", sans-serif',mono:'ui-monospace,Consolas,monospace'})[design.font]||'serif';
  const size=Math.min(24,Math.max(12,Number(design.fontSize)||16));const lh=Math.min(2.6,Math.max(1.3,Number(design.lineHeight)||1.9));const gap=Math.min(36,Math.max(0,Number(design.spacing)||0));
- const lines=chosen.map((r,entryIndex)=>r.type==='scene'?`<section id="entry-${entryIndex}" class="entry scene-entry" data-tab="${esc(r.tab)}"><h2>${formatRuby(r.text)}</h2></section>`:r.type==='image'?`<figure id="entry-${entryIndex}" class="entry illustration-entry" data-tab="${esc(r.tab)}"><img src="${String(r.image||'').startsWith('data:image/')?r.image:''}" alt="挿絵"><figcaption>${formatRuby(r.text)}</figcaption></figure>`:`<div id="entry-${entryIndex}" class="entry" data-tab="${esc(r.tab)}" style="--speaker:${safeColor(r.color,'#aeb6ff')}"><div class="head">${design.showTabs?`<span class="tab">[${esc(r.tab)}]</span>`:''}<button class="name profile-link" type="button" data-person="${esc(r.name)}" style="--speaker:${safeColor(r.color,'#aeb6ff')}">${esc(r.name)}</button></div><div class="message ${design.diceMode==='colored'?diceClass(r.text):''}">${formatRuby(r.text).replace(/\n/g,'<br>')}</div></div>`).join('\n');
+ const lines=chosen.map((r,entryIndex)=>r.type==='scene'?`<section id="entry-${entryIndex}" class="entry scene-entry" data-tab="${esc(r.tab)}"><h2>${formatRuby(r.text)}</h2></section>`:r.type==='image'?`<figure id="entry-${entryIndex}" class="entry illustration-entry" data-tab="${esc(r.tab)}"><img src="${String(r.image||'').startsWith('data:image/')?r.image:''}" alt="挿絵"><figcaption>${formatRuby(r.text)}</figcaption></figure>`:`<div id="entry-${entryIndex}" class="entry" data-tab="${esc(r.tab)}" style="--speaker:${safeColor(r.color,'#aeb6ff')}"><div class="head">${design.showTabs?`<span class="tab">[${esc(r.tab)}]</span>`:''}<button class="name profile-link" type="button" data-person="${esc(r.name)}" style="--speaker:${safeColor(r.color,'#aeb6ff')}">${esc(r.name)}</button></div><div class="message">${formatMessage(r)}</div></div>`).join('\n');
  const index=design.showIndex&&tabs.length?`<details class="toc"><summary>目次・タブ表示</summary><div class="tocitems"><button type="button" data-filter="">すべて</button>${tabs.map(t=>`<button type="button" data-filter="${esc(t)}">${esc(t)}</button>`).join('')}</div></details>`:'';
  // ログごとに安定したしおりキーを生成。別のログとの混同を防ぐ。
  const bookmarkIdentity=JSON.stringify([design.pageTitle||'',chosen.length,chosen.slice(0,3).map(r=>[r.name,r.text]),chosen.slice(-3).map(r=>[r.name,r.text])]);
